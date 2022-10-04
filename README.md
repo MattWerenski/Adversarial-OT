@@ -14,5 +14,5 @@ conda activate [envname]
 
 # install a bunch of packages from conda forge
 conda install -c conda-forge numpy scipy pot matplotlib tqdm jupyterlab
+pip install miniball
 ```
-
