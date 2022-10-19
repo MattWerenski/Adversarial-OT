@@ -13,10 +13,6 @@ conda create --name [envname] python=3.7
 conda activate [envname]
 
 # install a bunch of packages from conda forge
-<<<<<<< HEAD
 conda install -c conda-forge numpy scipy pot matplotlib tqdm jupyterlab cvxopt
-=======
-conda install -c conda-forge numpy scipy pot matplotlib tqdm jupyterlab
->>>>>>> 8fe89fffed7742227ddea19620b177ebc41716d6
 pip install miniball
 ```
