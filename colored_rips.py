@@ -63,7 +63,6 @@ def colored_rips(colored_points: np.array, threshold, max_order=3, distance='euc
     for i in range(k):
         groupings[f'({i},)'] = [tuple([i]) for i in np.arange(len(colored_points[i]), dtype=int)]
     
-    
     # handles order two groups
     combos = itertools.combinations(np.arange(k),2)
     for combo in combos:

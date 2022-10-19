@@ -44,5 +44,5 @@ for o in range(4, max_order+1):
             ps = np.array(ps + [ps[0]])
             plt.plot(ps[:,0], ps[:,1], c = 'y', alpha = 0.04)
             
-            
 plt.show()
+
