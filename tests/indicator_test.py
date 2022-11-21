@@ -63,10 +63,10 @@ op = solve(groupings, colored_points, weights)
 
 legend = []
 for g in op:
-    legend += [g]
     points = op[g]['points']
     
     if len(points) > 0:
+        legend += [g]
         plt.scatter(points[:,0], points[:,1])
 
 plt.legend(legend)
