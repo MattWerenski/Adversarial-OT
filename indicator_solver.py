@@ -1,8 +1,48 @@
 import numpy as np
-from colored_rips import colored_rips
+from colored_rips import basic_rips
 from cvxopt import matrix, solvers, spdiag, spmatrix
 import miniball
 
+def compute_merging_cost(k, groupings):
+    """
+    compute_meging_cost given a set of datapoints each from a different class 
+    and mass one finds the exact optimal way of merging the points together.
+
+    :param k: number of points being considered
+    :param groupings: output of basic_rips, a dictionary where the keys are the
+        valid ways to merge things together
+    :return: the cost to merge
+    """
+    
+    ngroups = len(groupings)
+    
+    # builds a group-point incidence matrix
+    incidence_matrix = np.zeros((k,ngroups))
+    i = 0
+    for g in groupings:
+        # converts the string '(0, 1, 2)' to the array [0, 1, 2]
+        group = np.fromstring(g[1:-1], dtype=int, sep=',')
+
+        incidence_matrix[group, i] = 1
+        i += 1
+
+    sum_matrix = matrix(incidence_matrix)
+    sum_vector = matrix(np.ones(k))
+
+    # creates a matrix-vector pair for enforcing non-negativity constraints
+    non_neg_matrix = matrix(np.diag(np.ones(ngroups)*-1))
+    non_neg_vector = matrix(0, (ngroups, 1), tc='d')
+    
+    # vector for the inner product in the LP
+    objective_vector = matrix(1.0, (ngroups,1), tc='d')
+    
+    # solves the linear program for the assignments
+    # for details see https://cvxopt.org/userguide/coneprog.html#cvxopt.solvers.lp
+    sol = solvers.lp(objective_vector, non_neg_matrix, non_neg_vector, 
+        A=sum_matrix, b=sum_vector)
+    
+    return sol['primal objective'] 
+    
 
 def make_sparse_sum_constraints(groupings, npoints):
     """
@@ -67,7 +107,7 @@ def solve(groupings, colored_points, weights):
     sum_matrix = make_sparse_sum_constraints(groupings, npoints)
     sum_vector = matrix(np.concatenate(weights))
     
-    # creats a matrix-vector pair for enforcing non-negativity constraints
+    # creates a matrix-vector pair for enforcing non-negativity constraints
     non_neg_matrix = spdiag([-1]*sum_matrix.size[1])
     non_neg_vector = matrix(0, (sum_matrix.size[1], 1), tc='d')
     
@@ -80,6 +120,7 @@ def solve(groupings, colored_points, weights):
         A=sum_matrix, b=sum_vector) 
     
     assignments = np.array(sol['x']).squeeze()
+    cost = np.sum(assignments)
     
     mu_As = {}
     
@@ -119,6 +160,6 @@ def solve(groupings, colored_points, weights):
 
         mu_As[g] = { 'points': points, 'weights': opt_weights }
     
-    return mu_As
+    return mu_As, cost
     
     

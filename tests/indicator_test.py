@@ -57,9 +57,11 @@ f2 = plt.figure(2, figsize = (7,7))
 
 
 # place weights on the points
-weights = [np.ones(n)/(np.sum(npoints)) for n in npoints] 
+weights = [np.ones(n)/n for n in npoints] 
 # and then actually make the groups
-op = solve(groupings, colored_points, weights)
+op, cost = solve(groupings, colored_points, weights)
+
+print(f'total cost', cost)
 
 legend = []
 for g in op:

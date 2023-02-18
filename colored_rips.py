@@ -1,8 +1,7 @@
 import numpy as np
-import numpy.linalg
 import itertools
 import miniball
-
+from scipy.spatial.distance import cdist
 
 def  pairwise_distances(points0: np.array, points1: np.array, distance='euc'):
     """
@@ -44,8 +43,58 @@ def threshold_pairs(points0: np.array, points1: np.array, threshold: float, dist
     # generates a binary indicator matrix
     return np.transpose(np.nonzero(distances < threshold))
 
+def basic_rips(datapoints: np.array, epsilon: float, cost_function):
+    """
+    basic_rips given a set of datapoints each from a different class 
+    returns all the ways that they can be merged together.
 
-def colored_rips(colored_points: np.array, threshold, max_order=3, distance='euc'):
+    :param datapoints: list of points to merge
+    :param epsilon: threshold beyond which the cost to merge points is infinity
+    :param cost_function: callable distance function
+    :return: the groups that can possibly be merged together
+    """
+
+    k = len(datapoints)
+
+    # order one groups
+    groupings = {}
+    for i in range(k):
+        groupings[f'({i},)'] = True
+    
+    # order two groups
+    combos = itertools.combinations(np.arange(k),2)
+    for combo in combos:
+        i1 = combo[0]
+        i2 = combo[1]
+        p1 = datapoints[i1]
+        p2 = datapoints[i2]
+
+        if cost_function(p1,p2) <= epsilon * 2:
+            groupings[f'({i1}, {i2})'] = True
+
+    for order in range(3, k+1):
+        combos = itertools.combinations(np.arange(k), order)
+        for combo in combos:
+            
+            head = combo[:-1]
+            tail = combo[1:]
+            
+            # quickly rule out this combination
+            if not (f'{head}' in groupings) or not (f'{tail}' in groupings):
+                continue
+
+            used_points = datapoints[combo,:]
+
+            centroid = np.mean(used_points, axis=0)
+            dists = cdist([centroid], used_points)
+
+            if np.max(dists) < epsilon:
+                groupings[f'{combo}'] = True
+
+    return groupings     
+
+
+def colored_rips(colored_points: np.array, threshold, max_order=3, distance='euc', candidate='centroid'):
     """
     colored_rips returns a sparse matrix of distances below the given threshold
     
@@ -53,7 +102,10 @@ def colored_rips(colored_points: np.array, threshold, max_order=3, distance='euc
         Each outer element corresponds to a distinct color.
     :param threshold: positive real upper bound on the pairwise distance
     :param max_order: highest order to attempt to merge
-    :param distance: Either 'euc_sq' or a distance function
+    :param distance: Either 'euc' or a distance function
+    :param candidate: If distance is not 'euc' then this will find a representative point for a group 
+        to act as its center. If not left as 'centroid' this should be a funtion which takes a list of
+        points and returns a single point.
     :return: structured dictionary of points to merge
     """
     
@@ -69,7 +121,7 @@ def colored_rips(colored_points: np.array, threshold, max_order=3, distance='euc
         color0 = colored_points[combo[0]]
         color1 = colored_points[combo[1]]
 
-        pairs = threshold_pairs(color0, color1, threshold * 2)
+        pairs = threshold_pairs(color0, color1, threshold * 2, distance)
 
         groupings[f'{combo}'] = [tuple(p) for p in pairs]
         
@@ -127,16 +179,25 @@ def colored_rips(colored_points: np.array, threshold, max_order=3, distance='euc
                 for (point,ind) in zip(new_points, new_points_inds):
                     group = head_points + [point] 
 
-                    # finds the smallest ball containing all the points
-                    c,r2 = miniball.get_bounding_ball(np.array(group))
+                    # when using euclidean distance everything can be precise
+                    if distance == 'euc':
+                        # finds the smallest ball containing all the points
+                        c,r2 = miniball.get_bounding_ball(np.array(group))
 
-                    # if the ball is small enough, add this tuple to the grouping
-                    if np.sqrt(r2) < threshold:
-                        groupings[f'{combo}'] += [tuple(head_group) + tuple([ind])]
+                        # if the ball is small enough, add this tuple to the grouping
+                        if np.sqrt(r2) < threshold:
+                            groupings[f'{combo}'] += [tuple(head_group) + tuple([ind])]
+
+                    # otherwise use the approximation scheme with custom candidate and distance
+                    else:
+                        # TODO check this later
+                        # gets the candidate point for this group
+                        c = np.mean(group, axis=0) if candidate == 'centroid' else candidate(group)
+
+                        # if all points are within the threshold of the candidate then
+                        # the group is valid
+                        if np.max([distance(c,g) for g in group]) < threshold:
+                            groupings[f'{combo}'] += [tuple(head_group) + tuple([ind])]
+
                         
     return groupings
-        
-        
-    
-    
-    
