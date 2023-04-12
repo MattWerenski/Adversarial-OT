@@ -3,7 +3,7 @@ import itertools
 import numpy as np
 from scipy.spatial.distance import cdist
 import torch
-
+import miniball
 
 import colored_rips
 import indicator_solver
@@ -73,7 +73,14 @@ def compute_cost(datapoints: list, epsilon: float, cost_function):
     :param cost_function: callable distance function
     :return: the cost to merge
     """
-
+    
+    if cost_function == 'euclidean':
+        metric = euclidean
+    elif cost_function == 'chebyshev':
+        metric = chebyshev
+    else:
+        metric = cost_function
+    
     ndatapoints = len(datapoints)
     
     # handle the three easiest cases separately
@@ -82,20 +89,27 @@ def compute_cost(datapoints: list, epsilon: float, cost_function):
     if ndatapoints == 1:
         return 1
     if ndatapoints == 2:
-        return 1 if cost_function(datapoints[0],datapoints[1]) <= 2 * epsilon else 2
+        return 1 if metric(datapoints[0],datapoints[1]) <= 2 * epsilon else 2
     
     cost_matrix = cdist(datapoints, datapoints, metric=cost_function)
     # makes dealing with distances from i to i less annoying
     cost_matrix = cost_matrix + (np.eye(ndatapoints) * 10 * epsilon) 
-
+    
     if ndatapoints == 3:
         # no points can be merged
         if np.min(cost_matrix) > 2*epsilon:
             return 3
         
         # all three points can be merged to a single point
-        centroid = np.mean(datapoints, axis=0)
-        if np.max(cdist([centroid], datapoints)) <= epsilon:
+        
+        if cost_function == 'euclidean':
+            centroid, _ = miniball.get_bounding_ball(datapoints)
+        elif cost_function == 'chebyshev':
+            centroid = (np.min(datapoints, axis=0) + np.max(datapoints, axis=0)) / 2
+        else:
+            centroid = np.mean(datapoints, axis=0)
+        
+        if np.max(cdist([centroid], datapoints, metric=cost_function)) <= epsilon:
             return 1
         
         # all three pairs can be merged but not to a singly point
@@ -110,7 +124,7 @@ def compute_cost(datapoints: list, epsilon: float, cost_function):
     # To speed things up I partition the data_points according to if they
     # can even be possibly connected based on the 2 * epsilon heuristic.
     connectable_indices = find_components(cost_matrix <= 2 * epsilon)
-
+    
     total_cost = 0
     for component in connectable_indices:
         if len(component) < 4:
@@ -122,6 +136,7 @@ def compute_cost(datapoints: list, epsilon: float, cost_function):
 
             # gets all the ways we can group points together
             groupings = colored_rips.basic_rips(datapoints[component,:], epsilon, cost_function)
+            
             total_cost += indicator_solver.compute_merging_cost(k, groupings)
             
     return total_cost
@@ -151,16 +166,16 @@ def create_cost_tensor(data: list, epsilon: float, cost_function):
 
     # creates a big empty cost tensor
     cost_tensor = np.zeros(np.prod(sizes)).reshape(sizes)
-
-    for inds in itertools.product(*indices):
+    
+    for inds in itertools.product(*indices):            
         # obtains all the indices which are not the end indices
         datapoints = [data[i][inds[i]] if inds[i]+1 != sizes[i] else None for i in range(nclasses)]
         datapoints = [dp for dp in datapoints if dp is not None]
     
         # figures out the cost to merge things by looking at the datapoints
         cost = compute_cost(np.array(datapoints), epsilon, cost_function)
-
         cost_tensor[inds] = cost
+        
 
     return cost_tensor
 

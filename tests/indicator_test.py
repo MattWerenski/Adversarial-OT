@@ -15,7 +15,7 @@ from indicator_solver import solve
 
 k = 6
 max_order = 6
-distance='euc'
+distance='euclidean'
 threshold = 1.2
 
 # create some basic data 

@@ -14,7 +14,7 @@ from colored_rips import colored_rips
 
 k = 6
 max_order = 6
-distance='euc'
+distance='euclidean'
 threshold = 1.5
 
 # create some basic data 

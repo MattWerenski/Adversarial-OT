@@ -1,38 +1,29 @@
 import numpy as np
 import itertools
 import miniball
-from scipy.spatial.distance import cdist
+from scipy.spatial.distance import cdist, euclidean, chebyshev
 
-def  pairwise_distances(points0: np.array, points1: np.array, distance='euc'):
+def  pairwise_distances(points0: np.array, points1: np.array, distance='euclidean'):
     """
     pairwise_distances returns a matrix (np.array) of pairwise distances between 
     
     :param points0: (m,d) array of points from the first class
     :param points1: (n,d) array of points from the second class
-    :param distance: Either 'euc_sq' or a distance function
+    :param distance: Either 'euclidean', 'chebyshev', or a distance function
     :return: (n,n) numpy array of pairwise distances
     """
     
-    if distance == 'euc':
-        norm_sq0 = np.square(points0).sum(axis=1)
-        norm_sq1 = np.square(points1).sum(axis=1)
-        dist_sq = np.add.outer(norm_sq0, norm_sq1) - 2 * points0 @ points1.T
-        return np.sqrt(dist_sq)
+    return cdist(points0, points1, distance)
     
-    m = points0.shape[0]
-    n = points1.shape[0]
-    return np.array([
-        distance(p1,p2) for (p1,p2) in itertools.product(points0, points1)
-    ]).reshape(m,n)
 
-def threshold_pairs(points0: np.array, points1: np.array, threshold: float, distance='euc'):
+def threshold_pairs(points0: np.array, points1: np.array, threshold: float, distance='euclidean'):
     """
     threshold_grpah returns a sparse matrix of distances below the given threshold
     
     :param points0: (m,d) array of points to consider
     :param points1: (n,d) array of points to consider
     :param threshold: positive real upper bound on the pairwise distance
-    :param distance: Either 'euc_sq' or a distance function
+    :param distance: Either 'euclidean', 'chebyshev', or a distance function
     :return: A list of indices where the points are close enough 
         and the corresponding distances
     """
@@ -54,6 +45,14 @@ def basic_rips(datapoints: np.array, epsilon: float, cost_function):
     :return: the groups that can possibly be merged together
     """
 
+    
+    if cost_function == 'euclidean':
+        metric = euclidean
+    elif cost_function == 'chebyshev':
+        metric = chebyshev
+    else:
+        metric = cost_function
+        
     k = len(datapoints)
 
     # order one groups
@@ -69,7 +68,7 @@ def basic_rips(datapoints: np.array, epsilon: float, cost_function):
         p1 = datapoints[i1]
         p2 = datapoints[i2]
 
-        if cost_function(p1,p2) <= epsilon * 2:
+        if metric(p1,p2) <= epsilon * 2:
             groupings[f'({i1}, {i2})'] = True
 
     for order in range(3, k+1):
@@ -85,8 +84,14 @@ def basic_rips(datapoints: np.array, epsilon: float, cost_function):
 
             used_points = datapoints[combo,:]
 
-            centroid = np.mean(used_points, axis=0)
-            dists = cdist([centroid], used_points)
+            if cost_function == 'euclidean':
+                centroid, _ = miniball.get_bounding_ball(used_points)
+            elif cost_function == 'chebyshev':
+                centroid = (np.max(used_points, axis=0) + np.min(used_points,axis=0)) / 2
+            else:
+                centroid = np.mean(used_points, axis=0)
+                
+            dists = cdist([centroid], used_points, metric=cost_function)
 
             if np.max(dists) < epsilon:
                 groupings[f'{combo}'] = True
@@ -94,7 +99,7 @@ def basic_rips(datapoints: np.array, epsilon: float, cost_function):
     return groupings     
 
 
-def colored_rips(colored_points: np.array, threshold, max_order=3, distance='euc', candidate='centroid'):
+def colored_rips(colored_points: np.array, threshold, max_order=3, distance='euclidean', candidate='centroid'):
     """
     colored_rips returns a sparse matrix of distances below the given threshold
     
@@ -102,7 +107,7 @@ def colored_rips(colored_points: np.array, threshold, max_order=3, distance='euc
         Each outer element corresponds to a distinct color.
     :param threshold: positive real upper bound on the pairwise distance
     :param max_order: highest order to attempt to merge
-    :param distance: Either 'euc' or a distance function
+    :param distance: Either 'euclidean', 'chebyshev', or a distance function
     :param candidate: If distance is not 'euc' then this will find a representative point for a group 
         to act as its center. If not left as 'centroid' this should be a funtion which takes a list of
         points and returns a single point.
@@ -180,12 +185,20 @@ def colored_rips(colored_points: np.array, threshold, max_order=3, distance='euc
                     group = head_points + [point] 
 
                     # when using euclidean distance everything can be precise
-                    if distance == 'euc':
+                    if distance == 'euclidean':
                         # finds the smallest ball containing all the points
                         c,r2 = miniball.get_bounding_ball(np.array(group))
 
                         # if the ball is small enough, add this tuple to the grouping
-                        if np.sqrt(r2) < threshold:
+                        if np.sqrt(r2) <= threshold:
+                            groupings[f'{combo}'] += [tuple(head_group) + tuple([ind])]
+                            
+                    elif distance == 'chebyshev':
+                        g = np.array(group)
+                        c = (np.max(g, axis=0) + np.min(g,axis=0)) / 2
+                        r = np.max(np.abs(g - c))
+                        
+                        if r <= threshold:
                             groupings[f'{combo}'] += [tuple(head_group) + tuple([ind])]
 
                     # otherwise use the approximation scheme with custom candidate and distance

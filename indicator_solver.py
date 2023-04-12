@@ -3,6 +3,8 @@ from colored_rips import basic_rips
 from cvxopt import matrix, solvers, spdiag, spmatrix
 import miniball
 
+solvers.options['show_progress'] = False
+
 def compute_merging_cost(k, groupings):
     """
     compute_meging_cost given a set of datapoints each from a different class 
