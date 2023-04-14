@@ -70,7 +70,7 @@ def compute_cost(datapoints: list, epsilon: float, cost_function):
 
     :param datapoints: list of points to merge
     :param epsilon: threshold beyond which the cost to merge points is infinity
-    :param cost_function: callable distance function
+    :param cost_function: 'euclidean', 'chebyshev' or a callable distance function
     :return: the cost to merge
     """
     
@@ -151,7 +151,7 @@ def create_cost_tensor(data: list, epsilon: float, cost_function):
 
     :param data: list of np.arrays containing the samples for each class
     :param epsilon: threshold beyond which the cost to merge points is infinity
-    :param cost_function: callable distance function
+    :param cost_function: 'euclidean', 'chebyshev' or a callable distance function
     :return: tensor with entries representing the cost to merge points together
     """
 

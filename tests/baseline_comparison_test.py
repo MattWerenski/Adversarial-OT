@@ -10,6 +10,7 @@ from colored_rips import basic_rips, colored_rips
 from entropic import approximate_MOT
 from indicator_solver import solve
 from fixed_point import incentive_fixed_point, violating_mass
+from truncated import truncated_emot
 
 solvers.options['show_progress'] = False
 
@@ -45,11 +46,19 @@ data = [
 #data = [ x1, x2, x3, x4 ]
 
 epsilon = 0.3
+eta = 1
 
 print("Performing eMOT")
 r_ks = np.ones((m,n+1)) / (n) 
 X, C = approximate_MOT(data, r_ks, epsilon, euclidean, 0.3)
 print("Total Cost", (X*C).sum())
+
+print("Performing truncated eMOT")
+pi_As, Ll, Bs, index_tuples = truncated_emot(data, epsilon, eta, euclidean, max_order=3)
+c = 0
+for p in pi_As:
+    c += np.sum(pi_As[p] * Bs[p])
+print("Total Cost", c)
 
 print("Performing fixed point")
 Y, Ymass, gammas, _ = incentive_fixed_point(data, epsilon, euclidean, 
