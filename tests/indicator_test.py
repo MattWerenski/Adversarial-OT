@@ -9,7 +9,7 @@ import os
 sys.path.append(os.path.abspath('../'))
 
 from colored_rips import colored_rips
-from indicator_solver import solve
+from indicator_solver import solve, extract_groupings
 
 # required settings
 
@@ -29,7 +29,10 @@ for i in range(k):
 
 # get the groupings
 
-groupings = colored_rips(colored_points, threshold, max_order, distance=distance)
+thresholds = colored_rips(colored_points, threshold, max_order, distance=distance)
+groupings = extract_groupings(thresholds)
+
+print(list(groupings.keys()))
     
 # plot the points
 
@@ -41,7 +44,9 @@ for i in range(k):
 # and show all the complexes of order at least 3
 for o in range(3, max_order+1):
     for combo in itertools.combinations(np.arange(k), o):
-        groups = groupings[f'{combo}']
+        if not combo in groupings:
+            continue
+        groups = groupings[combo]
         for g in groups:
             ps = [colored_points[combo[i]][g[i]] for i in range(o)]
             ps = np.array(ps + [ps[0]])

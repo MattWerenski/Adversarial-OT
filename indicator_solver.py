@@ -1,5 +1,5 @@
 import numpy as np
-from colored_rips import basic_rips
+from old_colored_rips import basic_rips
 from cvxopt import matrix, solvers, spdiag, spmatrix
 import miniball
 
@@ -8,7 +8,7 @@ solvers.options['show_progress'] = False
 def compute_merging_cost(k, groupings):
     """
     compute_meging_cost given a set of datapoints each from a different class 
-    and mass one finds the exact optimal way of merging the points together.
+        and mass one finds the exact optimal way of merging the points together.
 
     :param k: number of points being considered
     :param groupings: output of basic_rips, a dictionary where the keys are the
@@ -21,9 +21,7 @@ def compute_merging_cost(k, groupings):
     # builds a group-point incidence matrix
     incidence_matrix = np.zeros((k,ngroups))
     i = 0
-    for g in groupings:
-        # converts the string '(0, 1, 2)' to the array [0, 1, 2]
-        group = np.fromstring(g[1:-1], dtype=int, sep=',')
+    for group in groupings:
 
         incidence_matrix[group, i] = 1
         i += 1
@@ -48,14 +46,18 @@ def compute_merging_cost(k, groupings):
 
 def make_sparse_sum_constraints(groupings, npoints):
     """
-    generates the equality constraint matrix for the LP below. 
+    make_sparse_sum_constraints generates the equality constraint matrix 
+        for the LP below. 
     
     :param groupings: colored vietoris-rips groups, this is output by colored_rips 
     :param npoints: list of number of points for each color
     :return: A sparse matrix for enforcing the equality constraints in the LP
     """
     # helper function for ease of indexing rows across colors
-    start_inds = np.cumsum(npoints) - npoints[0]
+    start_inds = np.cumsum(npoints)# - npoints[0]
+    start_inds[1:] = start_inds[0:-1]
+    start_inds[0] = 0
+    
     def h_index(g,i):
         return start_inds[g] + i
     
@@ -70,12 +72,11 @@ def make_sparse_sum_constraints(groupings, npoints):
     current_col = 0
     
     # each "grouping" corresponds to a group of colors being fused 
-    for g in groupings:
-        # converts the string '(0, 1, 2)' to the array [0, 1, 2]
-        groups = np.fromstring(g[1:-1], dtype=int, sep=',')
+    for groups in groupings:
         
         # iterates over all given complexes
-        complexes = groupings[g]
+        complexes = groupings[groups]
+        
         for comp in complexes:
             # the row indices correspond to the points in the complex
             row_inds += [h_index(g,i) for (g,i) in zip(groups,comp)]
@@ -93,13 +94,35 @@ def make_sparse_sum_constraints(groupings, npoints):
                     tc='d') # d is required by the library
 
 
-def solve(groupings, colored_points, weights):
+def extract_groupings(thresholds):
+    """
+    extract_groupings converts structured data from fast_colored_rips
+        into the format expected by solve
+        
+    :param threholds: output of fast_colored_rips
+    :return: a dictionary with the structure expected by solve
+    """
+    
+    groupings = {}
+    for t in thresholds:
+        if len(t) > 4:
+            groupings[t] = thresholds
+            continue
+        
+        groupings[t] = list(zip(*np.nonzero(thresholds[t])))
+        
+    return groupings
+
+def solve(groupings, colored_points, weights, return_mu_As=True, metric='euclidean'):
     """
     solve returns the optimal measures mu_A based on the groupings and weights
     
     :param groupings: colored vietoris-rips groups, this is output by colored_rips
     :param colored_points: list of arrays of points, each outer element is one color
-    :param weights: list of vectors representing the amount of mass at each point 
+    :param weights: list of vectors representing the amount of mass at each point
+    :param return_mu_As: whether or not to return the measures mu_A
+    :param metric: distance to use if return_mu_As is set to True. Must be 
+        euclidean or chebyshev
     :return: A dictionary of optimal point placements and weights
     """
     
@@ -107,6 +130,7 @@ def solve(groupings, colored_points, weights):
     
     # creates a matrix-vector pair for enforcing equality constraints
     sum_matrix = make_sparse_sum_constraints(groupings, npoints)
+    
     sum_vector = matrix(np.concatenate(weights))
     
     # creates a matrix-vector pair for enforcing non-negativity constraints
@@ -124,35 +148,39 @@ def solve(groupings, colored_points, weights):
     assignments = np.array(sol['x']).squeeze()
     cost = np.sum(assignments)
     
+    if not return_mu_As:
+        return cost
+    
     mu_As = {}
     
     # index keeps track of the appropriate location in the assignments vector
     index = 0
     # iterates over the subsets of {1,...,K} and constructs mu_A
-    for g in groupings:
-        # converts the string '(0, 1, 2)' to the array [0, 1, 2]
-        groups = np.fromstring(g[1:-1], dtype=int, sep=',')
+    for groups in groupings:
         
         points = []
         opt_weights = []
         
         # iterates over the complexes and finds both the fuse point and the
         # amount of mass going to that point
-        complexes = groupings[g]
+        complexes = groupings[groups]
         for c in complexes:
             # truncates sicne cvxopt can have some low precision at times.
-            if assignments[index] < 0.00001:
+            if assignments[index] < 0.000001:
                 index += 1
                 continue
 
             # adds the mass
             opt_weights += [assignments[index]]
 
-            # uses miniball to find the location of the support
-            # 1. collects the point locations from their indices
+            
+            # collects the point locations from their indices
             ps = np.array([colored_points[k][i] for (k,i) in zip(groups, c)])
-            # 2. find the correct miniball placement
-            (p,r) = miniball.get_bounding_ball(ps)
+            if metric == 'euclidean':
+                # find the correct miniball placement
+                (p,r) = miniball.get_bounding_ball(ps)
+            elif metric == 'chebyshev':
+                p = (np.max(ps, axis=0) + np.min(ps,axis=0)) / 2
             
             points += [p]
             index += 1
@@ -160,7 +188,7 @@ def solve(groupings, colored_points, weights):
         points = np.array(points)
         opt_weights = np.array(opt_weights)
 
-        mu_As[g] = { 'points': points, 'weights': opt_weights }
+        mu_As[groups] = { 'points': points, 'weights': opt_weights }
     
     return mu_As, cost
     

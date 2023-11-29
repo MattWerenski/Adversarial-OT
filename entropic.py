@@ -1,255 +1,5 @@
-
-import itertools
 import numpy as np
-from scipy.spatial.distance import cdist
-import torch
-import miniball
-
-import colored_rips
-import indicator_solver
-
-def find_components(A: np.array):
-    """
-    find_components given a boolean matrix representing the adjacency matrix
-    returns a list of indices of that are in each component.
-
-    :param A: square boolean np.array where A_ij = True if i is connected to j
-    :return: a list of list of indices for each component.
-    """
-
-    # tracks where we have been so far
-    visited = np.zeros(A.shape[0])
-    # will contain all the components
-    components = []
-    
-    # this will evaluate to false once every index has been assigned a component
-    while np.sum(visited) < A.shape[0]:
-        # find the first index not yet visited 
-        start = np.argmin(visited)
-
-        # set the search to start there
-        queue = [start]
-        # and add this index to the componnet
-        comp = [start]
-        # mark that one as visited
-        visited[start] = 1
-
-        # performs a breadth first search of the graph building up the component
-        # when the queue is empty we have gone over the whole component
-        while len(queue) > 0:
-            # pop the first index off the queue
-            current = queue[0]
-            queue = queue[1:]
-            
-            # visited * (-1) + 1 = 0 if that index was already visited and 1 otherwise
-            # performing this multiplication masks the neighbors of current if they
-            # have already been visited.
-            unvistied_neighbors = A[current] * (visited * (-1) + 1)
-            indices = np.nonzero(unvistied_neighbors)[0].tolist()
-            
-            # adds all new indices to the queue
-            queue += indices
-            # adds all new indices to the component
-            comp += indices
-            # and marks them as visited
-            visited += unvistied_neighbors
-            
-        # adds the completed component to the list
-        components += [comp]
-
-    # returns all of the components
-    return components
-
-
-def compute_cost(datapoints: list, epsilon: float, cost_function):
-    """
-    compute_cost given a set of datapoints, figures out how the points can be
-    merged together while staying under the budget epsilon. The UNNORMALIZED
-    cost is returned (all points are treated as if they have mass 1) 
-    (TODO: eventually allow non-uniform mass)
-
-    :param datapoints: list of points to merge
-    :param epsilon: threshold beyond which the cost to merge points is infinity
-    :param cost_function: 'euclidean', 'chebyshev' or a callable distance function
-    :return: the cost to merge
-    """
-    
-    if cost_function == 'euclidean':
-        metric = euclidean
-    elif cost_function == 'chebyshev':
-        metric = chebyshev
-    else:
-        metric = cost_function
-    
-    ndatapoints = len(datapoints)
-    
-    # handle the three easiest cases separately
-    if ndatapoints == 0:
-        return 0
-    if ndatapoints == 1:
-        return 1
-    if ndatapoints == 2:
-        return 1 if metric(datapoints[0],datapoints[1]) <= 2 * epsilon else 2
-    
-    cost_matrix = cdist(datapoints, datapoints, metric=cost_function)
-    # makes dealing with distances from i to i less annoying
-    cost_matrix = cost_matrix + (np.eye(ndatapoints) * 10 * epsilon) 
-    
-    if ndatapoints == 3:
-        # no points can be merged
-        if np.min(cost_matrix) > 2*epsilon:
-            return 3
-        
-        # all three points can be merged to a single point
-        
-        if cost_function == 'euclidean':
-            centroid, _ = miniball.get_bounding_ball(datapoints)
-        elif cost_function == 'chebyshev':
-            centroid = (np.min(datapoints, axis=0) + np.max(datapoints, axis=0)) / 2
-        else:
-            centroid = np.mean(datapoints, axis=0)
-        
-        if np.max(cdist([centroid], datapoints, metric=cost_function)) <= epsilon:
-            return 1
-        
-        # all three pairs can be merged but not to a singly point
-        if np.max(np.min(cost_matrix, axis=0)) <= 2*epsilon:
-            return 1.5
-        
-        # otherwise only pairs can be merged and the best cost is 2
-        return 2
-    
-    # If we are using 4+ then things can get complicated. 
-
-    # To speed things up I partition the data_points according to if they
-    # can even be possibly connected based on the 2 * epsilon heuristic.
-    connectable_indices = find_components(cost_matrix <= 2 * epsilon)
-    
-    total_cost = 0
-    for component in connectable_indices:
-        if len(component) < 4:
-            # basic case handled above
-            total_cost += compute_cost(datapoints[component,:], epsilon, cost_function)
-        else:
-            # more difficult case where we need to be precise
-            k = len(component)
-
-            # gets all the ways we can group points together
-            groupings = colored_rips.basic_rips(datapoints[component,:], epsilon, cost_function)
-            
-            total_cost += indicator_solver.compute_merging_cost(k, groupings)
-            
-    return total_cost
-
-
-def create_cost_tensor(data: list, epsilon: float, cost_function):
-    """
-    create_cost_tensor generates the cost tensor for the generalized MOT. 
-    Each entry is filled in according to (2.11) in https://arxiv.org/pdf/2204.12676.pdf
-    which in turn uses (2.8) where the cost is assumed to be
-        C(delta_x, delta_y) = { 0 if c(x,y) <= epsilon, +infty otherwise}.
-
-    :param data: list of np.arrays containing the samples for each class
-    :param epsilon: threshold beyond which the cost to merge points is infinity
-    :param cost_function: 'euclidean', 'chebyshev' or a callable distance function
-    :return: tensor with entries representing the cost to merge points together
-    """
-
-    # number of classes
-    nclasses = len(data)
-
-    # number of datapoints in each class, and adds one for the ghost
-    sizes = [arr.shape[0]+1 for arr in data]
-
-    # creates a set of numbers ranging from 0 to size_i for each size
-    indices = [np.arange(size, dtype=int) for size in sizes]
-
-    # creates a big empty cost tensor
-    cost_tensor = np.zeros(np.prod(sizes)).reshape(sizes)
-    
-    for inds in itertools.product(*indices):            
-        # obtains all the indices which are not the end indices
-        datapoints = [data[i][inds[i]] if inds[i]+1 != sizes[i] else None for i in range(nclasses)]
-        datapoints = [dp for dp in datapoints if dp is not None]
-    
-        # figures out the cost to merge things by looking at the datapoints
-        cost = compute_cost(np.array(datapoints), epsilon, cost_function)
-        cost_tensor[inds] = cost
-        
-
-    return cost_tensor
-
-def error_threshold(approx_margins, r_ks):
-    '''
-    error_threshold computes the discrepancy between the marginals of the 
-    current multicoupling and the given marginals
-    
-    :param B: tensor current approximate multicoupling
-    :param r_ks: prescribed marginals
-    :return: error in the marginals, this is equation (17) in LHCJ
-    '''
-    
-    m = approx_margins.shape[0]
-        
-    total_error = 0
-    # iterate over each margin
-    for k in range(m):        
-        # computes the L1 error on this marginal and adds it to the total error 
-        total_error += np.linalg.norm(r_ks[k] - approx_margins[k], ord=1)
-    
-    print(f'Total error {total_error}', end='\r')
-    return  total_error
-
-
-def coupling_from_potentials(beta, cost_tensor, eta):
-    '''
-    coupling_from_potentials computes the current (approximate) coupling
-    which is induced by the dual potentials beta and the cost tensor
-    in LHCJ this is on page 8 and referred to using B
-    
-    :param beta: 2D np.array where each row is a dual potential
-    :param cost_tensor: tensor of merging costs
-    :param eta: regularization parameter
-    :return: approximate multicoupling induced by the potentials
-    '''
-    
-    (m,n) = beta.shape
-    
-    # computes the outer sum of the potentials. After this is complete
-    # outer_sum[i0,i1,...,im-1] = beta[0,i0] + beta[1,i1] + ... + beta[m-1,im-1] 
-    shape = np.ones(m, dtype=int)
-    shape[0] = n
-    outer_sum = beta[0].reshape(tuple(shape))
-    for k in range(1,m):
-        shape = np.ones(m, dtype=int)
-        shape[k] = n
-        outer_sum = outer_sum + beta[k].reshape(tuple(shape))
-        
-    return np.exp(outer_sum - cost_tensor / eta)
-
-
-def compute_margins(mc):
-    '''
-    compute_margins given a multicoupling as a tensor, reutrns the margins
-    by summing over all but one index in each possible way.
-    
-    :param mc: tensor representing the multicoupling
-    :return: array of marginals of the multicoupling
-    '''
-    
-    # extracts the number of margins and the size from the multicoupling
-    m = len(mc.shape)
-    n = mc.shape[0]
-    
-    approx_margins = torch.zeros((m,n))
-    # iterates over the axes and sums along all but one.
-    for k in range(m):
-        sum_inds = np.arange(m-1, dtype=int) 
-        sum_inds[k:] += 1
-        approx_margins[k,:] = torch.sum(mc, tuple(sum_inds))
-        
-    return approx_margins
-
+from colored_rips import colored_rips
 
 def margin_distance(a,b):
     '''
@@ -262,141 +12,377 @@ def margin_distance(a,b):
     '''
     
     n = a.shape[0]
-    return np.dot(np.ones(n), b - a) + np.dot(a, np.log(a / b))
-    
-    
-    
-def multi_sinkhorn(cost_tensor, eta, r_ks, epsilon_prime):
+    return np.dot(np.ones(n), b - a) + np.dot(a, np.log(a) - np.log(b))
+
+
+def KL_divergence(projections, marginals):
     '''
-    multi_sinkhorn performs algorithm 1 in LHCJ which take a cost tensor
-    and performs sinkhorn iterations until the error is small enough
+    KL_divergence computes the KL divergences between marginals and projections
     
-    :param cost_tensor: tensor where each entry is the cost to couple points
+    :param projections: list of np.arrays of projection of coupling tensors
+    :param marginals: prescribed marginals
+    :return: np.array of KL divergences between marginals and projections
+    '''
+    
+    K = len(projections)
+    divergence = np.zeros(K)
+    for k in range(K):
+        margin = margin_distance(marginals[k], projections[k])
+        divergence[k] = margin
+    return divergence
+
+
+def greedy_coordinate(projections, marginals):
+    '''
+    greedy_coordinate finds the coordinate of the largest KL divergence
+    
+    :param projections: list of np.arrays of projection of coupling tensors
+    :param marginals: prescribed marginals
+    :return: the coordinate of the largest KL divergence
+    '''
+    
+    div_list = KL_divergence(projections, marginals)
+    return np.argmax(div_list)
+
+
+def error_threshold(projections, marginals):
+    '''
+    error_threshold computes the discrepancy between the marginals of the 
+    current multicoupling and the given marginals
+    
+    :param projections: list of np.arrays of projection of coupling tensors
+    :param marginals: prescribed marginals
+    :return: l^1 error between marginals and projections
+    '''
+    
+    K = len(projections)
+        
+    total_error = 0
+    for k in range(K):        
+        # computes the L1 error on this marginal and adds it to the total error 
+        total_error += np.linalg.norm(marginals[k] - projections[k], ord=1)
+    
+    return  total_error
+
+
+def full_projecting_measures(potentials, exp_cost_tensors, eta):
+    
+    """
+    full_projecting_measures computes the sum of the projections of the couplings
+    onto their marginals. It also returns the marginals of each tensor for fast
+    updates in the future
+
+    :param potentials: list of np.arrays of potential functions
+    :param exp_cost_tensors: list of the exponential of cost tensors
+    :param eta: entropic parameter
+    :return: list of the projections and a dictionary containing the marginals
+        of each of the partial couplings
+    """      
+    
+    eta_const = np.exp(-1/eta)
+    
+    projections = [np.zeros(len(p)) for p in potentials]
+    tensor_marginals = {}
+    
+    for colors in exp_cost_tensors:
+        
+        tensor_marginals[colors] = []
+        
+        # in this case we use the dense tensor approach
+        if len(colors) <= 4:
+            # computes the tensor product of the potentials
+            exp_potential_tensor = partial_potential_tensor([potentials[i] for i in colors], eta)
+            exp_cost_tensor = exp_cost_tensors[colors]
+            # and multiplies by the cost tensor to get the partial coupling
+            pct = exp_potential_tensor * exp_cost_tensor
+            
+            # computes each of the margins of the partial coupling
+            sum_inds = tuple(np.arange(len(colors)))
+            for i in range(len(colors)):
+                sum_ind = sum_inds[:i] + sum_inds[i+1:]
+                tensor_marginals[colors] += [pct.sum(sum_ind)]
+                projections[colors[i]] += tensor_marginals[colors][i]
+            
+        # and in this case we use the sparse tensor approach
+        else:
+            # groups is a list of all the indices which have finite cost
+            groups = exp_cost_tensors[colors]
+            
+            # don't take the tensor product though, we'll pull out the entries as needed
+            exp_potentials = np.array([np.exp(potentials[c] / eta) for c in colors])
+            inds = np.arange(len(colors))
+            
+            tm = [np.zeros(len(tensor_marginals[colors][i])) for i in range(len(colors))]  
+            for g in groups:
+                # grabs the relevant entries of the exponential potentials computes what
+                # the entry of the tensor would be. Then stores it's projection
+                entry = np.prod(exp_potentials[inds, g]) * eta_const
+                for i in range(len(g)):
+                    tm[i][g[i]] += entry
+                    
+            tensor_marginals[colors] = tm
+                
+            for i in range(len(colors)):
+                projections[colors[i]] += tensor_marginals[colors][i]
+                
+    return projections, tensor_marginals
+
+
+def projecting_measures(potentials, projections, tensor_marginals, update_index, exp_cost_tensors, eta):
+    """
+    projecting_measures updates the projections and tensor marginals in response
+        to changing a single potential, and avoids unnecessary computation from the unchanged potentials.
+        
+
+    :param potentials: list of np.arrays of potential functions
+    :param projections: list of np.arrays of the previous projections
+    :param tensor_marginals: dictionary of the marginals of each of the partial coupling tensors
+    :param update_index: index of the potential that w
+    :param exp_cost_tensors: list of the exponential of cost tensors
+    :param eta: entropic parameter
+    :return: list of the projections and a dictionary containing the marginals
+        of each of the partial couplings
+    """      
+    
+    eta_const = np.exp(-1/eta)
+    
+    for colors in exp_cost_tensors:
+        # if the class doesn't involve the index that changed we don't need to worry about it
+        if not update_index in colors:
+            continue
+        
+        # dense case
+        if len(colors) <= 4:
+            exp_potential_tensor = partial_potential_tensor([potentials[i] for i in colors], eta)
+            exp_cost_tensor = exp_cost_tensors[colors]
+            
+            pct = exp_potential_tensor * exp_cost_tensor
+            
+            sum_inds = tuple(np.arange(len(colors)))
+            for i in range(len(colors)):
+                sum_ind = sum_inds[:i] + sum_inds[i+1:]
+                # subtract the previous contribution from this tensor in the projection
+                projections[colors[i]] -= tensor_marginals[colors][i]
+                # update the marginal
+                tensor_marginals[colors][i] = pct.sum(sum_ind)
+                # add it back in
+                projections[colors[i]] += tensor_marginals[colors][i]
+        
+        # sparse case
+        else:
+            groups = exp_cost_tensors[colors]
+            exp_potentials = np.array([np.exp(potentials[c] / eta) for c in colors])
+            inds = np.arange(len(colors))
+            
+            # subtract out the contributions from this tensor in the projection
+            for i in range(len(colors)):
+                projections[colors[i]] -= tensor_marginals[colors][i]
+            
+            # update the tensor marginals
+            tm = [np.zeros(len(tensor_marginals[colors][i])) for i in range(len(colors))]  
+            for g in groups:
+                entry = np.prod(exp_potentials[inds, g]) * eta_const
+                for i in range(len(g)):
+                    tm[i][g[i]] += entry
+                    
+            tensor_marginals[colors] = tm
+            
+            # add the contribution back in
+            for i in range(len(colors)):
+                projections[colors[i]] += tensor_marginals[colors][i]
+                
+    return projections, tensor_marginals
+
+
+def truncated_sinkhorn(marginals, exp_cost_tensors, eta, delta, max_order):
+    '''
+    truncated_sinkhorn runs a version of the sinkhorn updates which minimizes 
+        redundant computations and uses sparsity
+    
+    :param marginals: prescribed marginals
+    :param exp_cost_tensors: list of the exponential of cost tensors
     :param eta: regularization parameter
-    :param r_ks: 2D np.array where the kth row is the prescribed marginal of the
-        kth distribution being coupled (these are r_k in the paper)
-    :param epsilon_prime: error threshold
-    :return: approximate multicoupling of the data
+    :param delta: error threshold
+    :param max_order: truncation level
+    :return: potentials, projections, and the tensor_marginals for fast computation later
     '''
     
-    (m,n) = r_ks.shape
+    potentials = [np.zeros(len(m)) for m in marginals]
+    projections, tensor_marginals = full_projecting_measures(potentials, exp_cost_tensors, eta)
     
-    beta = torch.zeros(r_ks.shape)
-    B = coupling_from_potentials(beta, cost_tensor, eta)
-    approx_margins = compute_margins(B)
-    while error_threshold(approx_margins, r_ks) > epsilon_prime:
+    error = error_threshold(projections, marginals)
+    while error > delta:
         
-        # finds the distances between current margins and prescribed margins
-        rhos = np.zeros(m)
-        for k in range(m):
-            # finds the distance between the current margin and prescribed margin
-            rhos[k] = margin_distance(r_ks[k], approx_margins[k])
+        greedy_I = greedy_coordinate(projections, marginals)
+        potentials[greedy_I] = potentials[greedy_I] + eta * np.log(marginals[greedy_I]) - eta * np.log(projections[greedy_I])
+        projections, tensor_marginals = projecting_measures(potentials, projections, tensor_marginals, greedy_I, exp_cost_tensors, eta)        
         
-        # finds the worst margin which is to be used for the update
-        K = np.argmax(rhos)
-        
-        # performs the update on the potential for that margin
-        beta[K] = beta[K] + np.log(r_ks[K] / approx_margins[K])
-        
-        # updates the multicoupling and the margins
-        B = coupling_from_potentials(beta, cost_tensor, eta)
-        approx_margins = compute_margins(B)
-        
-    return B 
+        error = error_threshold(projections, marginals)
 
-def round_solution(X, r_ks):
+    return potentials, projections, tensor_marginals
+
+
+def rounding_scheme(marginals, potentials, projections, tensor_marginals, exp_cost_tensors, eta):
     '''
-    round_solution performs algorithm 2 LHCJ which takes an approximate coupling
-    from multi_sinkhorn and rounds it appropriately to get an exact coupling
-    
-    :param X: tensor representing the coupling
-    :param r_ks: 2D np.array where the kth row is the prescribed marginal of the
-        kth distribution being coupled (these are r_k in the paper)
-    :return: a perturbed version of X which is exactly a coupling
+    rounding_scheme rounds the coupling tensors to satisfy the marginal constraints. Does so
+        with a minimal amount of redundant computation
+        
+    :param marginals: prescribed marginals
+    :param potentials: list of np.arrays of potential functions
+    :param projections: list of np.arrays of the previous projections
+    :param tensor_marginals: dictionary of the marginals of each of the partial coupling tensors
+    :param exp_cost_tensors: list of the exponential of cost tensors
+    :param eta: regularization parameter
+    :return: coupling_tensors satisfying the marginal constraints
     '''
+
+    K = len(potentials)
+    eta_const = np.exp(-1/eta)
     
-    (m,n) = r_ks.shape
-    X_k = X
-    
-    # iterate fixing one margin at a time
-    for k in range(m):
+    # iterate over each marginal, decreasing the potentials so that every marginal
+    # is below its maximum allowed amount
+    for k in range(K):
         # indices to marignalize over
-        sum_inds = np.arange(m-1, dtype=int)
-        sum_inds[k:] += 1 
+        z_k = np.minimum( np.ones(len(projections[k])), np.divide(marginals[k], projections[k]) )
+        potentials[k] = np.log(z_k) + potentials[k]
+        # fast update!
+        projections, tensor_marginals = projecting_measures(potentials, projections, tensor_marginals, k, exp_cost_tensors, eta)
+    
+    # fills in the partial couplings
+    partial_coupling_tensors = {}
+    for colors in exp_cost_tensors:
+        # dense case
+        if len(colors) <= 4:
+            exp_potential_tensor = partial_potential_tensor([potentials[i] for i in colors], eta)
+            exp_cost_tensor = exp_cost_tensors[colors]
+            pct = exp_potential_tensor * exp_cost_tensor
+            partial_coupling_tensors[colors] = pct
+            continue
         
-        # shape for tensor multiplication
-        shape = np.ones(m, dtype=int)
-        shape[k] = n
+        # sparse case
+        groups = exp_cost_tensors[colors]
+        entries = []
+        exp_potentials = np.array([np.exp(potentials[c] / eta) for c in colors])
+        inds = np.arange(len(colors))
+        for g in groups:
+            entries += [np.prod(exp_potentials[inds, g]) * eta_const]
+            
+        partial_coupling_tensors[colors] = {
+            'groups': groups,
+            'entries': entries
+        }
+    
+    # now go over each single interaction marginal and add any mass that is needed
+    err = [np.zeros(len(marginal)) for marginal in marginals]
+    for k in range(K):
+        err[k] = marginals[k] - projections[k]
+        partial_coupling_tensors[(k,)] += err[k]
         
-        # finds z_k as defined in alg 2.
-        z_k = np.minimum(np.ones(n), np.divide(r_ks[k], np.array(torch.sum(X_k, tuple(sum_inds)))))
+    return partial_coupling_tensors
+
+def exponential_partial_cost_tensors(data, epsilon, eta, distance, max_order, candidate='rips'):
+    """
+    exponential_partial_cost_tensors generates the exponential of partial cost 
+    tensors for the generalized MOT. Each entry is filled in according to (2.11) in 
+        https://arxiv.org/pdf/2204.12676.pdf
+    which in turn uses (2.8) where the cost is assumed to be
+        C(delta_x, delta_y) = { 0 if c(x,y) <= epsilon, +infty otherwise}. 
+    and does so using tricks
+
+    :param data: list of np.arrays containing the samples for each class
+    :param epsilon: threshold beyond which the cost to merge points is infinity
+    :param eta: entropic parameter
+    :param distance: 'euclidean', 'chebyshev', or a callable distance function
+    :param max_order: how large the interactions we consider should be
+    :param candidate: how to check if points can be merged
+    :return: tensor with entries representing the cost to merge points together
+    """
+    
+    
+    thresholds = colored_rips(data, epsilon, max_order, distance, candidate=candidate)
+    
+    # number of colors
+    ncolors = len(data)
+
+    # number of datapoints in each class
+    sizes = [arr.shape[0] for arr in data]
+
+    exp_cost_tensors = {}
+    
+    for colors in thresholds:
+        # dense case
+        if len(colors) <= 4:
+            exp_cost_tensors[colors] = np.exp(-1/eta) * thresholds[colors]
+            continue
         
-        # performs the update on X_k but all at once using a tensor multiplication trick
-        X_k = X_k * z_k.reshape(tuple(shape))
-    
-    # computes the err_k for each index at the end. (error in margin k)
-    err_ks = torch.zeros(r_ks.shape)
-    approx_margins = compute_margins(X_k)
-    err_ks = r_ks - approx_margins
+        # sparse case
+        exp_cost_tensors[colors] = thresholds
         
-    # finds the final coupling
-    err_1_norm = torch.sum(torch.abs(err_ks[0,:]))
-    
-    # computes the outer product of the errors to apply
-    shape = np.ones(m, dtype=int)
-    shape[0] = n
-    error_product = err_ks[0].reshape(tuple(shape))
-    for k in range(1,m):
-        shape = np.ones(m, dtype=int)
-        shape[k] = n
-    
-        error_product = error_product * err_ks[k].reshape(tuple(shape))
-    
-    # final formula for Y
-    Y = X_k + error_product / torch.pow(err_1_norm, m - 1)
-    
-    return Y
+    return exp_cost_tensors
 
 
-def approximate_MOT(data, r_ks, epsilon, cost_function, delta):
+def partial_potential_tensor(potentials, eta):
+    """
+    partial_potential_tensor computes the tensor product of the potentials 
+        using numpy to substantially speed things up
+    
+    :param potentials: list of np.arrays of potential functions
+    :param eta: entropic parameter
+    :return: tensor with entries representing the tensor product of the exponential of potentials
+    """
+    
+    # number of colors
+    ncolors = len(potentials)
+    
+    # this handles up to 7-way tensor products
+    einsum_strings = [
+        '',
+        'a->a',
+        'a,b->ab',
+        'a,b,c->abc',
+        'a,b,c,d->abcd',
+        'a,b,c,d,e->abcde',
+        'a,b,c,d,e,f->abcdef',
+        'a,b,c,d,e,f,g->abcdefg',
+        'a,b,c,d,e,f,g,h-abcdefgh'
+    ]
+    
+    exp_potentials = [np.exp(p / eta) for p in potentials]
+    # actually does the tensor producting
+    fast_tensor = np.einsum(einsum_strings[ncolors], *exp_potentials)
+    
+    return fast_tensor
+
+
+def approximate_adversarial_cost(data, marginals, epsilon, distance, delta, eta, max_order, candidate='rips'):
     '''
-    approximate_MOT solves for the approximate MOT multicoupling using 
-    algorithm 3 in LHCJ.
+    approximate_adversarial_cost compute an approximate optimal cost of truncated 
+        stratified MOT problem using a lot of tricks to increase speed.
     
-    :param data: list of data points
-    :param r_ks: list of weights for each datapoint
-        (currently this must be uniform)
-    :param epsilon: tolerance under which points can be combined
-    :param cost_function: method of computing distances between points
-    :param delta: accuracy parameter (this is epsilon in LHCJ)
-    :return: a multicoupling of the margins
+    :param data: list of np.arrays containing the samples for each class
+    :param marginals: prescribed marginals
+    :param epsilon: adversarial budget
+    :param distance: the choice of cost function, c
+    :param delta: error threshold
+    :param eta: regularization parameter
+    :param max_order: truncation level
+    :param candidate: method used to check if points can be merged
+    :return: approximate cost: total mass of marginals - cost = adversarial risk
     '''
     
-    (m,n) = r_ks.shape
     
-    print('start')
     
-    # creates the cost tensor for the problem
-    cost_tensor = create_cost_tensor(data, epsilon, cost_function)
+    exp_cost_tensors = exponential_partial_cost_tensors(data, epsilon, \
+                                        eta, distance, max_order, candidate=candidate)
+    potentials, projections, tensor_marginals = truncated_sinkhorn(marginals, exp_cost_tensors, \
+                                        eta, delta, max_order)
+    partial_coupling_tensors = rounding_scheme(marginals, potentials, projections, \
+                                         tensor_marginals, exp_cost_tensors, eta)
+    partial_cost = 0
+    for interaction in partial_coupling_tensors:
+        if len(interaction) <= 4:
+            partial_cost += np.sum(partial_coupling_tensors[interaction])
+        else:
+            partial_cost += np.sum(partial_coupling_tensors[interaction]['entries'])
     
-    print('cost tensor complete')
-    
-    eta = delta / (2 * m * np.log(n+1))
-    epsilon_prime = delta / (8 * torch.max(torch.Tensor(cost_tensor)))
-    
-    r_ks_tilde = (1 - epsilon_prime / (4 * m)) * r_ks + (epsilon_prime / (4 * m * (n+1)))
-    
-    print('parameter set')
-    
-    # step 2 of Alg. 3, get an approximate multicoupling
-    X_tilde = multi_sinkhorn(cost_tensor, eta, r_ks_tilde, epsilon_prime)
-    
-    print('\nmulti sinkhorn complete')
-    
-    # step 3 of Alg. 3, perform the rounding step
-    X_hat = round_solution(X_tilde, r_ks_tilde)
-    
-    print('rounding complete')
-    print('done')
-    
-    return X_hat, cost_tensor
+    return partial_cost

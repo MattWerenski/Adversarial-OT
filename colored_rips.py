@@ -1,216 +1,246 @@
+from itertools import combinations
 import numpy as np
-import itertools
+from scipy.spatial.distance import cdist
 import miniball
-from scipy.spatial.distance import cdist, euclidean, chebyshev
 
-def  pairwise_distances(points0: np.array, points1: np.array, distance='euclidean'):
-    """
-    pairwise_distances returns a matrix (np.array) of pairwise distances between 
-    
-    :param points0: (m,d) array of points from the first class
-    :param points1: (n,d) array of points from the second class
-    :param distance: Either 'euclidean', 'chebyshev', or a distance function
-    :return: (n,n) numpy array of pairwise distances
-    """
-    
-    return cdist(points0, points1, distance)
-    
-
-def threshold_pairs(points0: np.array, points1: np.array, threshold: float, distance='euclidean'):
-    """
-    threshold_grpah returns a sparse matrix of distances below the given threshold
-    
-    :param points0: (m,d) array of points to consider
-    :param points1: (n,d) array of points to consider
-    :param threshold: positive real upper bound on the pairwise distance
-    :param distance: Either 'euclidean', 'chebyshev', or a distance function
-    :return: A list of indices where the points are close enough 
-        and the corresponding distances
-    """
-    
-    # computes the pairwise distances
-    distances = pairwise_distances(points0, points1, distance)
-    
-    # generates a binary indicator matrix
-    return np.transpose(np.nonzero(distances < threshold))
-
-def basic_rips(datapoints: np.array, epsilon: float, cost_function):
-    """
-    basic_rips given a set of datapoints each from a different class 
-    returns all the ways that they can be merged together.
-
-    :param datapoints: list of points to merge
-    :param epsilon: threshold beyond which the cost to merge points is infinity
-    :param cost_function: callable distance function
-    :return: the groups that can possibly be merged together
-    """
-
-    
-    if cost_function == 'euclidean':
-        metric = euclidean
-    elif cost_function == 'chebyshev':
-        metric = chebyshev
-    else:
-        metric = cost_function
+def process_binary_tensor(binary_tensor, non_zero, data, threshold, distance='euclidean', candidate='rips'):
+    '''
+    process_binary_tensor receives a binary_tensor representing which colored points 
+        can *possibly* be merged together, and validates whether or not they actually can be
         
-    k = len(datapoints)
-
-    # order one groups
-    groupings = {}
-    for i in range(k):
-        groupings[f'({i},)'] = True
+    :param binary_tensor: 0/1 or True/False tensor which represents the possibility of merging
+        (some hacks are done on this, it can be a dictionary which gets populated). 
+        This is modified *in place*
+    :param: non_zero: list of the non-zero entries in the binary_tensor (or a hack in some cases)
+    :param data: list of lists of points that are under consideration
+    :param threshold: maximum allowed distance to move
+    :param distance: only matters of candidate="cech" and determines how to find the "center point"
+    :param candidate: the way to check if a set of points can be merged. Options are 
+        "rips" - forms the rips complex
+        "cech" - forms the cech complex
+        "centroid" - picks the centroid of the points as the center point
+        callable - custom function which returns the center of a list of points
+    :return: None, the binary_tensor is modified directly
+    '''
     
-    # order two groups
-    combos = itertools.combinations(np.arange(k),2)
-    for combo in combos:
-        i1 = combo[0]
-        i2 = combo[1]
-        p1 = datapoints[i1]
-        p2 = datapoints[i2]
+    
+    k = len(data)
+    if candidate == 'rips':
+        return
+        
+    if candidate == 'cech':
+        if distance == 'euclidean':
+            for indices in non_zero:
+                points = np.array([data[i][indices[i]] for i in range(k)])
 
-        if metric(p1,p2) <= epsilon * 2:
-            groupings[f'({i1}, {i2})'] = True
+                # finds the smallest ball containing all the points
+                c,r2 = miniball.get_bounding_ball(points)
 
-    for order in range(3, k+1):
-        combos = itertools.combinations(np.arange(k), order)
-        for combo in combos:
-            
-            head = combo[:-1]
-            tail = combo[1:]
-            
-            # quickly rule out this combination
-            if not (f'{head}' in groupings) or not (f'{tail}' in groupings):
-                continue
-
-            used_points = datapoints[combo,:]
-
-            if cost_function == 'euclidean':
-                centroid, _ = miniball.get_bounding_ball(used_points)
-            elif cost_function == 'chebyshev':
-                centroid = (np.max(used_points, axis=0) + np.min(used_points,axis=0)) / 2
-            else:
-                centroid = np.mean(used_points, axis=0)
+                # if the ball is small enough, add this tuple to the grouping
+                binary_tensor[indices] = np.sqrt(r2) <= threshold
                 
-            dists = cdist([centroid], used_points, metric=cost_function)
+        elif distance == 'chebyshev':
+            for indices in non_zero:
+                points = np.array([data[i][indices[i]] for i in range(k)])
+                
+                c = (np.max(points, axis=0) + np.min(points,axis=0)) / 2
+                r = np.max(np.abs(points - c))
+                binary_tensor[indices] = r <= threshold
+                
+        else:
+            raise Exception('cech is only supported when distnance="euclidean" or "chebyshev"')
+            
+        return
 
-            if np.max(dists) < epsilon:
-                groupings[f'{combo}'] = True
+    if candidate == 'centroid':
+        for indices in non_zero:
+            points = np.array([data[i][indices[i]] for i in range(k)])
+            centroid = np.mean(points, axis=0)
+            binary_tensor[indices] = cdist(centroid.reshape(1,-1), points, metric=distance).max() < threshold
+        return
 
-    return groupings     
+    else:
+        for indices in non_zero:
+            points = np.array([data[i][indices[i]] for i in range(k)])
+            center = candidate(points)
+            binary_tensor[indices] = cdist(center, points, metric=distance).max() < threshold
 
-
-def colored_rips(colored_points: np.array, threshold, max_order=3, distance='euclidean', candidate='centroid'):
+def colored_rips(data: np.array, threshold, max_order=3, distance='euclidean', candidate='rips'):
     """
-    colored_rips returns a sparse matrix of distances below the given threshold
+    colored_rips returns a structured dictionary of the valid interactions of distances below 
+        the given threshold and does so using a bunch of tricks for speed up
     
     :param points: list of (n,d) array of points to consider. 
         Each outer element corresponds to a distinct color.
     :param threshold: positive real upper bound on the pairwise distance
     :param max_order: highest order to attempt to merge
     :param distance: Either 'euclidean', 'chebyshev', or a distance function
-    :param candidate: If distance is not 'euc' then this will find a representative point for a group 
-        to act as its center. If not left as 'centroid' this should be a funtion which takes a list of
-        points and returns a single point.
+    :param candidate: the way to check if a set of points can be merged. Options are 
+        "rips" - forms the rips complex
+        "cech" - forms the cech complex
+        "centroid" - picks the centroid of the points as the center point
+        callable - custom function which returns the center of a list of points
     :return: structured dictionary of points to merge
     """
     
-    k = len(colored_points)
+    k = len(data)
     
-    groupings = {}
+    thresholds = {}
+    # handles order 1
     for i in range(k):
-        groupings[f'({i},)'] = [tuple([i]) for i in np.arange(len(colored_points[i]), dtype=int)]
+        thresholds[(i,)] = np.ones(len(data[i]))
     
-    # handles order two groups
-    combos = itertools.combinations(np.arange(k),2)
+    if max_order == 1:
+        return thresholds
+    # handles order 2
+    combos = combinations(np.arange(k),2)
     for combo in combos:
-        color0 = colored_points[combo[0]]
-        color1 = colored_points[combo[1]]
-
-        pairs = threshold_pairs(color0, color1, threshold * 2, distance)
-
-        groupings[f'{combo}'] = [tuple(p) for p in pairs]
-        
+        color0 = data[combo[0]]
+        color1 = data[combo[1]]
+        dist_matrix = cdist(color0, color1, metric=distance)
+        binary_tensor = dist_matrix < threshold * 2
+        if np.sum(binary_tensor) == 0:
+            continue 
+        thresholds[combo] = binary_tensor
     
-    # handle 3 or more, iteratively building up to higher orders
-    for order in range(3,max_order+1):
+    if max_order == 2:
+        return thresholds
+    
+    # handles order 3
+    combos = combinations(np.arange(k),3)
+    for combo in combos:
+        
+        if (not (combo[0],combo[1]) in thresholds) \
+            or (not (combo[0],combo[2]) in thresholds) \
+            or (not (combo[1],combo[2]) in thresholds):
+            continue
+        
+        t0 = thresholds[(combo[0],combo[1])]
+        t1 = thresholds[(combo[0],combo[2])]
+        t2 = thresholds[(combo[1],combo[2])]
+        
+        # the binary_tensor[i,j,k] is true if it is possible that the points
+        # can be merged together
+        binary_tensor = np.einsum('ij,ik,jk->ijk',t0,t1,t2)
+        
+        cps = [data[i] for i in combo]
+        non_zero = zip(*np.nonzero(binary_tensor))
+        # validates which points can be merged
+        process_binary_tensor(binary_tensor, non_zero, cps, threshold, distance=distance, candidate=candidate)
+        
+        if np.sum(binary_tensor) == 0:
+            continue
+            
+        thresholds[combo] = binary_tensor
+    if max_order == 3:
+        return thresholds
+    
+    # handles order 4
+    combos = combinations(np.arange(k), 4)
+    for combo in combos:
+        if (not (combo[0],combo[1],combo[2]) in thresholds) \
+            or (not (combo[1],combo[2],combo[3]) in thresholds) \
+            or (not (combo[0],combo[3]) in thresholds):
+            continue
 
+        t0 = thresholds[(combo[0],combo[1],combo[2])]
+        t1 = thresholds[(combo[1],combo[2],combo[3])]
+        t2 = thresholds[(combo[0],combo[3])]
+        
+        # the binary_tensor[i,j,k,;] is true if it is possible that the points
+        # can be merged together
+        binary_tensor = np.einsum('ijk,jkl,il->ijkl',t0,t1,t2,optimize=True)
+        
+        cps = [data[i] for i in combo]
+        non_zero = zip(*np.nonzero(binary_tensor))
+        # validates which points can be merged
+        process_binary_tensor(binary_tensor, non_zero, cps, threshold, distance=distance, candidate=candidate)
+        
+        if np.sum(binary_tensor) == 0:
+            continue
+
+        thresholds[combo] = binary_tensor
+    
+    if max_order == 4:
+        return thresholds
+    
+    # now we handle the sparse part. In this setting we don't return tensors,
+    # but instead lists of indices where merging is possible
+    # this is some of the hardest code to understand
+    groupings = {}
+    combos = combinations(np.arange(k), 4)
+    for combo in combos:
+        if not combo in thresholds:
+            continue
+        
+        groupings[combo] = list(zip(*np.nonzero(thresholds[combo])))
+    
+    for order in range(5,max_order+1):
         # iterate over all the unique sets of  (order) color combos
-        combos = itertools.combinations(np.arange(k),order)
+        combos = combinations(np.arange(k),order)
 
         for combo in combos:
-
-            groupings[f'{combo}'] = []
 
             # gets the first and last (order - 1) colors
             head = combo[:-1]
             tail = combo[1:]
+            
 
-            # gets all the grous that were possible before adding first/last color
-            head_groups = groupings[f'{head}']
-            tail_groups = groupings[f'{tail}']
+            if (not head in groupings) or (not tail in groupings):
+                continue
+
+            # gets all the groupings that were possible before adding first/last color
+            head_groups = groupings[head]
+            tail_groups = groupings[tail]
 
             # organizes all the tail_groups based on the first (order - 1) indices
             tail_groups_reorg = {}
             for tail_group in tail_groups:
                 leads = tail_group[:-1]
                 last = tail_group[-1]
-                key = f'{leads}'
-                if key in tail_groups_reorg:
-                    tail_groups_reorg[key] += [last]
+                if leads in tail_groups_reorg:
+                    tail_groups_reorg[leads] += [last]
                 else:
-                    tail_groups_reorg[key] = [last]
-
+                    tail_groups_reorg[leads] = [last]
+            
+            non_zero = []
+            
             # iterates over all the head groups for ones that overlap tail groups
             # then sees if they are compatible
-
             for head_group in head_groups:
-
-                # extracts the corresponding spatail points
-                head_points = [colored_points[combo[i]][head_group[i]] for i in range(order - 1)]
-
-                lead = head_group[0]
+                
                 lasts = head_group[1:]
 
-                key = f'{lasts}'
-                if not key in tail_groups_reorg:
+                if not lasts in tail_groups_reorg:
                     # no groups are compatible with the current head group
                     continue
-
+                    
                 # find the point candidates
-                new_points_inds = tail_groups_reorg[key]
-                new_points = [colored_points[combo[order-1]][ind] for ind in new_points_inds]
+                new_points_inds = tail_groups_reorg[lasts]
+                non_zero += [head_group + (ind,) for ind in new_points_inds]
+            
+            valid_groupings_dict = {}
+            cps = [data[i] for i in combo]
+            # does a special trick for the rips complex here
+            if candidate == 'rips':
+                order2 = thresholds[(combo[0],combo[-1])]
+                for nz in non_zero:
+                    valid_groupings_dict[nz] = order2[nz[0],nz[-1]]
+            else:
+                process_binary_tensor(valid_groupings_dict, non_zero, cps, threshold, distance=distance, candidate=candidate)
+            
+            new_groups = []
+            for g in valid_groupings_dict:
+                if valid_groupings_dict[g]:
+                    new_groups += [g]
+                    
+            if len(new_groups) > 0:
+                groupings[combo] = new_groups
+                
 
-                # iterate over all the candidate groups
-                for (point,ind) in zip(new_points, new_points_inds):
-                    group = head_points + [point] 
+    for g in groupings:
+        if len(g) > 4:
+            thresholds[g] = groupings[g]
+            
+    return thresholds
 
-                    # when using euclidean distance everything can be precise
-                    if distance == 'euclidean':
-                        # finds the smallest ball containing all the points
-                        c,r2 = miniball.get_bounding_ball(np.array(group))
-
-                        # if the ball is small enough, add this tuple to the grouping
-                        if np.sqrt(r2) <= threshold:
-                            groupings[f'{combo}'] += [tuple(head_group) + tuple([ind])]
-                            
-                    elif distance == 'chebyshev':
-                        g = np.array(group)
-                        c = (np.max(g, axis=0) + np.min(g,axis=0)) / 2
-                        r = np.max(np.abs(g - c))
-                        
-                        if r <= threshold:
-                            groupings[f'{combo}'] += [tuple(head_group) + tuple([ind])]
-
-                    # otherwise use the approximation scheme with custom candidate and distance
-                    else:
-                        # TODO check this later
-                        # gets the candidate point for this group
-                        c = np.mean(group, axis=0) if candidate == 'centroid' else candidate(group)
-
-                        # if all points are within the threshold of the candidate then
-                        # the group is valid
-                        if np.max([distance(c,g) for g in group]) < threshold:
-                            groupings[f'{combo}'] += [tuple(head_group) + tuple([ind])]
-
-                        
-    return groupings

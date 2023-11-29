@@ -13,7 +13,7 @@ from colored_rips import colored_rips
 # required settings
 
 k = 6
-max_order = 6
+max_order = 4
 distance='euclidean'
 threshold = 1.5
 
@@ -35,14 +35,17 @@ groupings = colored_rips(colored_points, threshold, max_order, distance=distance
 for i in range(k):
     plt.scatter(colored_points[i][:,0], colored_points[i][:,1])    
 
+
 # and show all the complexes of order at least 4
-for o in range(4, max_order+1):
-    for combo in itertools.combinations(np.arange(k), o):
-        groups = groupings[f'{combo}']
-        for g in groups:
-            ps = [colored_points[combo[i]][g[i]] for i in range(o)]
-            ps = np.array(ps + [ps[0]])
-            plt.plot(ps[:,0], ps[:,1], c = 'y', alpha = 0.04)
+for combo in groupings:
+    if len(combo) < 4:
+        continue
+
+    groups = groupings[combo]
+    for g in zip(*np.nonzero(groups)):
+        ps = [colored_points[combo[i]][g[i]] for i in range(len(combo))]
+        ps = np.array(ps + [ps[0]])
+        plt.plot(ps[:,0], ps[:,1], c = 'y', alpha = 0.04)
             
 plt.show()
 
