@@ -1,5 +1,4 @@
 import numpy as np
-from old_colored_rips import basic_rips
 from cvxopt import matrix, solvers, spdiag, spmatrix
 import miniball
 
@@ -85,12 +84,12 @@ def make_sparse_sum_constraints(groupings, npoints):
             col_inds += [current_col] * len(groups)
             
             # move on to the next complex
-            current_col += 1    
+            current_col += 1
     
     # creates a sparse matrix compatible with cvxopt for fast LP solving
     return spmatrix(1.0, # every non-zero entry is a 1.0
                     np.array(row_inds, dtype=int), 
-                    np.array(col_inds,dtype=int), 
+                    np.array(col_inds, dtype=int), 
                     tc='d') # d is required by the library
 
 
@@ -106,7 +105,7 @@ def extract_groupings(thresholds):
     groupings = {}
     for t in thresholds:
         if len(t) > 4:
-            groupings[t] = thresholds
+            groupings[t] = thresholds[t]
             continue
         
         groupings[t] = list(zip(*np.nonzero(thresholds[t])))
